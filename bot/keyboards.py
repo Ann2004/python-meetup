@@ -1,4 +1,4 @@
-from telegram import ReplyKeyboardMarkup, KeyboardButton
+from telegram import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
 def get_start_menu():
 	keyboard = [
@@ -40,3 +40,15 @@ def get_question_menu():
         [KeyboardButton("Отмена")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+
+def get_program_navigation(current_index, total_events):
+    """Навигация по программе"""
+    keyboard = [
+        [
+            InlineKeyboardButton("⬅️ Назад", callback_data=f"program_prev_{current_index}"),
+            InlineKeyboardButton(f"{current_index + 1}/{total_events}", callback_data="program_current"),
+            InlineKeyboardButton("Вперед ➡️", callback_data=f"program_next_{current_index}")
+        ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
