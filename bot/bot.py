@@ -19,85 +19,6 @@ from datetime import datetime, time
 WAITING_QUESTION = 1
 
 
-EVENTS = [ # заменить на данные из БД
-    {
-        'id': 1,
-        'name': 'Митап по Python',
-        'event_date': '2026-06-30',
-        'started_at': time(10, 0),
-        'ended_at': time(18, 0),
-        'speeches': [
-            {
-                'topic': 'Тема доклада 1',
-                'speaker': 'Алексей Петров',
-                'started_at': time(10, 0),
-                'ended_at': time(11, 30)
-            },
-            {
-                'topic': 'Тема доклада 2',
-                'speaker': 'Мария Иванова',
-                'started_at': time(12, 0),
-                'ended_at': time(13, 30)
-            },
-            {
-                'topic': 'Тема доклада 3',
-                'speaker': 'Дмитрий Сидоров',
-                'started_at': time(14, 0),
-                'ended_at': time(15, 30)
-            }
-        ]
-    },
-    {
-        'id': 2,
-        'name': 'Конференция по Data Science',
-        'event_date': '2026-07-03',
-        'started_at': time(9, 0),
-        'ended_at': time(17, 0),
-        'speeches': [
-            {
-                 'topic': 'Тема доклада 1',
-                'speaker': 'Анна Козлова',
-                'started_at': time(9, 0),
-                'ended_at': time(10, 30)
-            },
-            {
-                'topic': 'Тема доклада 2',
-                'speaker': 'Павел Морозов',
-                'started_at': time(11, 0),
-                'ended_at': time(12, 30)
-            }
-        ]
-    },
-    {
-        'id': 3,
-        'name': 'Web-разработка 2026',
-        'event_date': '2026-07-05',
-        'started_at': time(10, 0),
-        'ended_at': time(16, 0),
-        'speeches': [
-            {
-                'topic': 'Тема доклада 1',
-                'speaker': 'Екатерина Волкова',
-                'started_at': time(10, 0),
-                'ended_at': time(11, 0)
-            },
-            {
-                'topic': 'Тема доклада 2',
-                'speaker': 'Игорь Соколов',
-                'started_at': time(11, 30),
-                'ended_at': time(13, 0)
-            },
-            {
-                'topic': 'Тема доклада 3',
-                'speaker': 'Ольга Медведева',
-                'started_at': time(14, 0),
-                'ended_at': time(15, 30)
-            }
-        ]
-    }
-]
-
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -136,10 +57,49 @@ async def toggle_speaker(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply_text, reply_markup=reply_markup)
 
 
+@sync_to_async
+def get_events_from_db():
+    """Получает мероприятия с выступлениями из БД"""
+    events = Event.objects.prefetch_related(
+        'speakerspeech_set__speaker'
+    ).all().order_by('event_date')
+    
+    events_data = []
+    for event in events:
+        speeches = []
+        for speech in event.speakerspeech_set.all().order_by('started_at'):
+            speeches.append({
+                'id': speech.id,
+                'topic': speech.topic,
+                'speaker': speech.speaker.name or speech.speaker.username,
+                'started_at': speech.started_at,
+                'ended_at': speech.ended_at
+            })
+        
+        events_data.append({
+            'id': event.id,
+            'name': event.name,
+            'event_date': event.event_date.strftime('%Y-%m-%d'),
+            'started_at': event.started_at,
+            'ended_at': event.ended_at,
+            'speeches': speeches
+        })
+    
+    return events_data
+
+
 async def show_program(update: Update, context: ContextTypes.DEFAULT_TYPE, edit_message=None):
     """Показывает текущее мероприятие в программе"""
-    events = EVENTS  # В будущем заменим на запрос к БД
+    events = await get_events_from_db()
     current_index = context.user_data.get('current_event_index', 0)
+
+    if not events:
+        message = "Пока нет запланированных мероприятий"
+        if edit_message:
+            await edit_message.edit_text(message)
+        else:
+            await update.message.reply_text(message)
+        return
     
     if current_index >= len(events):
         current_index = 0
@@ -172,7 +132,12 @@ async def handle_program_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     
     callback_data = query.data
-    events = EVENTS
+    events = await get_events_from_db()
+
+    if not events:
+        await query.message.edit_text("Пока нет запланированных мероприятий")
+        return
+
     current_index = context.user_data.get('current_event_index', 0)
     
     if callback_data.startswith("program_next"):
@@ -185,6 +150,7 @@ async def handle_program_callback(update: Update, context: ContextTypes.DEFAULT_
     context.user_data['current_event_index'] = current_index
     
     await show_program(update, context, edit_message=query.message)
+
 
 async def get_current_speech():
     now = datetime.now()
@@ -320,12 +286,15 @@ def format_event_message(event):
     message = f"*{event['name']}*\n"
     message += f"Дата: {event['event_date']}\n"
     message += f"Время: {event['started_at'].strftime('%H:%M')} - {event['ended_at'].strftime('%H:%M')}\n\n"
-    message += f"📋 *Программа выступлений:*\n"
     
-    for i, speech in enumerate(event['speeches'], 1):
-        message += f"\n{i}. {speech['topic']}\n"
-        message += f"   👤 {speech['speaker']}\n"
-        message += f"   🕐 {speech['started_at'].strftime('%H:%M')} - {speech['ended_at'].strftime('%H:%M')}\n"
+    if event['speeches']:
+        message += f"📋 *Программа выступлений:*\n"
+        for i, speech in enumerate(event['speeches'], 1):
+            message += f"\n{i}. {speech['topic']}\n"
+            message += f"   👤 {speech['speaker']}\n"
+            message += f"   🕐 {speech['started_at'].strftime('%H:%M')} - {speech['ended_at'].strftime('%H:%M')}\n"
+    else:
+        message += "📋 *Программа выступлений пока не объявлена*\n"
     
     return message
 
