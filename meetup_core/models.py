@@ -145,3 +145,17 @@ class Subscription(models.Model):
     
     def __str__(self):
         return f'{self.user.username} подписан'
+    
+
+class Broadcast(models.Model):
+    """Модель для рассылки сообщений всем пользователям"""
+    text = models.TextField('Текст сообщения')
+    sent_at = models.DateTimeField('Время отправки', auto_now_add=True)
+    
+    class Meta:
+        verbose_name = 'Рассылка'
+        verbose_name_plural = 'Рассылки'
+        ordering = ['-sent_at']
+    
+    def __str__(self):
+        return f'Рассылка от {self.sent_at.strftime("%d.%m.%Y %H:%M")}'
