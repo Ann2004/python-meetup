@@ -1,12 +1,22 @@
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import django
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'meetup.settings')
+django.setup()
+from meetup_core.models import User, Event, SpeakerSpeech, Question
+from asgiref.sync import sync_to_async
 from telegram import Update 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, ConversationHandler
 from dotenv import load_dotenv
 from keyboards import (
     get_start_menu, get_user_menu, get_question_menu, 
     get_speaker_menu, get_speaker_active_menu, get_program_navigation
 )
-from datetime import time
+from datetime import datetime, time
+
+
+WAITING_QUESTION = 1
 
 
 EVENTS = [ # заменить на данные из БД
@@ -45,7 +55,7 @@ EVENTS = [ # заменить на данные из БД
         'ended_at': time(17, 0),
         'speeches': [
             {
-                'topic': 'Тема доклада 1',
+                 'topic': 'Тема доклада 1',
                 'speaker': 'Анна Козлова',
                 'started_at': time(9, 0),
                 'ended_at': time(10, 30)
@@ -91,7 +101,18 @@ EVENTS = [ # заменить на данные из БД
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
-
+    @sync_to_async
+    def get_or_create_user():
+        user_db, _ = User.objects.get_or_create(
+            tg_id=user_id,
+            defaults = {
+                'username': user.username or '',
+                'name': user.full_name or '',
+                'user_role': 'guest'
+            }
+        )
+        return user_db
+    await get_or_create_user()
     # Инициализируем индекс текущего мероприятия
     context.user_data['current_event_index'] = 0
 
@@ -165,9 +186,90 @@ async def handle_program_callback(update: Update, context: ContextTypes.DEFAULT_
     
     await show_program(update, context, edit_message=query.message)
 
+async def get_current_speech():
+    now = datetime.now()
+    today_date = now.date()
+    current_time = now.time()
+    @sync_to_async
+    def _get():
+        event = Event.objects.filter(event_date=today_date).first()
+        if not event:
+            return None
+        speech = SpeakerSpeech.objects.filter(
+            event=event,
+            started_at__lte=current_time,
+            ended_at__gte=current_time
+        ).select_related('speaker').first()
+        return speech
+    return await _get()
 
-async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Вы можете задать вопрос спикеру", reply_markup=get_question_menu())
+
+async def ask_question_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Задайте ваш вопрос спикеру.\n\nЧтобы отменить, нажмите Отмена.",
+        reply_markup=get_question_menu()
+    )
+    return WAITING_QUESTION
+
+
+async def receive_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    question_text = update.message.text
+    tg_user = update.effective_user
+
+    @sync_to_async
+    def get_or_create_user():
+        user, _ = User.objects.get_or_create(
+            tg_id=tg_user.id,
+            defaults = {
+                'username': tg_user.username or '',
+                'name': tg_user.full_name or '',
+                'user_role': 'guest'
+            }
+        )
+        return user
+    user_db = await get_or_create_user()
+    speech = await get_current_speech()
+    if not speech:
+        await update.message.reply_text(
+            "Сейчас никто не выступает. Дождитесь, когда спикер начнет выступление",
+            reply_markup = get_user_menu()
+        )
+        return ConversationHandler.END
+    @sync_to_async
+    def save_question():
+        q = Question.objects.create(
+            speaker_speech=speech,
+            author=user_db,
+            text=question_text
+        )
+        return q
+    await save_question()
+    
+    speech = await get_current_speech()
+    speaker = speech.speaker 
+    if speaker.tg_id:
+        try:
+            await context.bot.send_message(
+                chat_id=speaker.tg_id,
+                text = f"Вопрос от {tg_user.full_name}\n\n{question_text}"
+            )
+        except Exception as e:
+            print(f"Ошибка отправки вопроса спикеру: {e}")
+    else:
+        await update.message.reply_text("Спикер пока не настроен, но вопрос сохранен")
+    await update.message.reply_text(
+        "Ваш вопрос отправлен \n\nСпикер ответит после выступления",
+        reply_markup=get_user_menu()
+    )
+    return ConversationHandler.END
+
+
+async def cancel_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Отправка вопроса отменена",
+        reply_markup=get_user_menu()
+    )
+    return ConversationHandler.END
 
 
 async def handle_speaker_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup):
@@ -194,8 +296,6 @@ async def hundle_user_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("Вы в главном меню", reply_markup=reply_markup)
     elif text == "Программа":
         await show_program(update, context)
-    elif text == "Задать вопрос":
-        await ask_question(update, context)
     elif text == "Текущий докладчик":
         await update.message.reply_text("Отобразится инфа о текущем докладчике", reply_markup=reply_markup)
     elif text == "Поддержать проект":
@@ -236,8 +336,23 @@ def main():
     application = Application.builder().token(bot_token).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("speaker", toggle_speaker))
-    application.add_handler(MessageHandler(filters.TEXT, hundle_buttons))
+    question_hundler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex(r'^Задать вопрос$'), ask_question_start)
+        ],
+        states={
+            WAITING_QUESTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_question),
+            ]
+        },
+        fallbacks=[
+            MessageHandler(filters.Regex(r'^Отмена$'), cancel_question)
+        ],
+        allow_reentry=True
+    )
+    application.add_handler(question_hundler)
     application.add_handler(CallbackQueryHandler(handle_program_callback, pattern="^program_"))
+    application.add_handler(MessageHandler(filters.TEXT, hundle_buttons))
     application.run_polling()
 
 
