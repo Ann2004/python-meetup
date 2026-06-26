@@ -29,8 +29,7 @@ def get_speaker_menu():
 def get_speaker_active_menu():
 	keyboard = [
 	    [KeyboardButton("Закончить доклад")],
-	    [KeyboardButton("Вопросы от слушателей")],
-	    [KeyboardButton("🏠 Меню")]
+	    [KeyboardButton("Вопросы от слушателей")]
 	]
 	return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -50,5 +49,11 @@ def get_program_navigation(current_index, total_events):
             InlineKeyboardButton(f"{current_index + 1}/{total_events}", callback_data="program_current"),
             InlineKeyboardButton("Вперед ➡️", callback_data=f"program_next_{current_index}")
         ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_networking_card_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("Показать другого пользователя", callback_data='networking_next')]
     ]
     return InlineKeyboardMarkup(keyboard)

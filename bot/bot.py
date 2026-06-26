@@ -11,12 +11,18 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from dotenv import load_dotenv
 from keyboards import (
     get_start_menu, get_user_menu, get_question_menu, 
-    get_speaker_menu, get_speaker_active_menu, get_program_navigation
+    get_speaker_menu, get_speaker_active_menu, get_program_navigation,
+    get_networking_card_keyboard
 )
 from datetime import datetime, time
+from random import choice
 
 
 WAITING_QUESTION = 1
+ASK_NAME = 2
+ASK_COMPANY = 3
+ASK_POSITION = 4
+ASK_ABOUT = 5
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -42,19 +48,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 С моей помощью вы сможете посмотреть программу мероприятия и задать вопрос ведущему, а так-же познакомиться с коллегами)))\n
 Чтобы открыть меню нажми на кнопку 🏠 Меню """
     await update.message.reply_text(welcome_text, reply_markup=get_start_menu())
-
-
-async def toggle_speaker(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    is_speaker = context.user_data.get('is_speaker', False)
-    new_status = not is_speaker
-    context.user_data['is_speaker'] = new_status
-    if new_status:
-        reply_text = "Поздравляем! Теперь вы спикер"
-        reply_markup = get_speaker_menu()
-    else:
-        reply_text = "Вы больше не спикер"
-        reply_markup = get_user_menu()
-    await update.message.reply_text(reply_text, reply_markup=reply_markup)
 
 
 @sync_to_async
@@ -86,6 +79,22 @@ def get_events_from_db():
         })
     
     return events_data
+
+async def toggle_speaker(update:Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    @sync_to_async
+    def change_role():
+        user = User.objects.get(tg_id=user_id)
+        if user.user_role == 'speaker':
+            user.user_role = 'guest'
+        else:
+            user.user_role = 'speaker'
+        user.save()
+        return user.user_role
+    new_role = await change_role()
+    if new_role == 'guest':
+        await update.message.reply_text("Вы стали слушателем)", reply_markup=get_user_menu())
+
 
 
 async def show_program(update: Update, context: ContextTypes.DEFAULT_TYPE, edit_message=None):
@@ -210,19 +219,18 @@ async def receive_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return q
     await save_question()
-    
-    speech = await get_current_speech()
-    speaker = speech.speaker 
-    if speaker.tg_id:
-        try:
-            await context.bot.send_message(
-                chat_id=speaker.tg_id,
-                text = f"Вопрос от {tg_user.full_name}\n\n{question_text}"
-            )
-        except Exception as e:
-            print(f"Ошибка отправки вопроса спикеру: {e}")
-    else:
-        await update.message.reply_text("Спикер пока не настроен, но вопрос сохранен")
+    if speech.is_active:
+        speaker = speech.speaker 
+        if speaker.tg_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=speaker.tg_id,
+                    text = f"Вопрос от {tg_user.full_name}\n\n{question_text}"
+                )
+            except Exception as e:
+                print(f"Ошибка отправки вопроса спикеру: {e}")
+        else:
+            await update.message.reply_text("Спикер пока не настроен, но вопрос сохранен")
     await update.message.reply_text(
         "Ваш вопрос отправлен \n\nСпикер ответит после выступления",
         reply_markup=get_user_menu()
@@ -238,16 +246,242 @@ async def cancel_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def activate_speech(update:Update, context: ContextTypes.DEFAULT_TYPE):
+    speech = await get_current_speech()
+    if not speech:
+        await update.message.reply_text(
+            "Нет выступления, которое вы можете начать"
+        )
+        return
+    if speech.speaker.tg_id != update.effective_user.id:
+        await update.message.reply_text(
+            "Это не ваше выступление"
+        )
+        return
+    @sync_to_async
+    def activate():
+        speech.is_active = True
+        speech.save()
+    await activate()
+    await update.message.reply_text(
+        "Вы начали доклад",
+        reply_markup=get_speaker_active_menu()
+    )
+
+@sync_to_async
+def deactivate_speech(update:Update, context: ContextTypes.DEFAULT_TYPE):
+    speech = SpeakerSpeech.objects.filter(
+        speaker__tg_id=update.effective_user.id,
+        is_active=True
+    ).first()
+    if not speech:
+        return None
+    if speech:
+        speech.is_active = False
+        speech.save()
+    return speech
+
+async def get_questions(update:Update, context: ContextTypes.DEFAULT_TYPE):
+    @sync_to_async
+    def questions():
+        return list(Question.objects.filter(
+            speaker_speech__speaker__tg_id=update.effective_user.id
+        ).order_by('created_at'))
+    questions = await questions()
+    if not questions:
+        await update.message.reply_text(
+            "У вас пока нет вопросов"
+        )
+        return
+    @sync_to_async
+    def create_question():
+        text = "Вопросы к вашему выступлению:\n\n"
+        for i, q in enumerate(questions, 1):
+            text += f"{i}.{q.text}\n от {q.author.name or q.author.username}\n\n"
+        return text
+    text = await create_question()
+    await update.message.reply_text(text)
+
+
+async def networking_next_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await show_networking_card(update, context)
+    await query.message.delete()
+
+
+
+async def show_networking_card(update:Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if update.message:
+        chat_id = update.message.chat_id
+    elif update.callback_query:
+        chat_id = update.callback_query.message.chat_id
+    else:
+        return
+
+    @sync_to_async
+    def get_other_users():
+        others = User.objects.filter(has_questionnaire=True).exclude(tg_id=user_id)
+        return list(others)
+
+    others = await get_other_users()
+    if not others:
+        text = "Пока никто не заполнил анкету. Попробуйте позже!"
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=get_user_menu()
+        )
+        return
+
+    person = choice(others)
+    text = f"{person.name or 'Аноним'}\n"
+    if person.company and person.company != '-':
+        text += f"Компания:{person.company}\n"
+    if person.position and person.position != '-':
+        text += f"Должность:{person.position}\n"
+    if person.about and person.about != '-':
+        text += f"О себе:{person.about}\n"
+    if person.username:
+        text += f"username: @{person.username}\n"
+    if person.tg_id:
+        text += f"tg_id: {person.tg_id}"
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        reply_markup = get_networking_card_keyboard()
+    )
+
+async def networking_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    @sync_to_async
+    def get_user():
+        return User.objects.filter(tg_id=user_id).first()
+    user_db = await get_user()
+    if not user_db:
+        await update.message.reply_text(
+            "Пользователь не найден. Напишите /start"
+        )
+        return ConversationHandler.END
+
+    if not user_db.has_questionnaire:
+        await update.message.reply_text(
+            "Давайте заполним анкету.\nВведите ваше имя(никнейм):",
+            reply_markup=get_question_menu()
+        )
+        return ASK_NAME
+    else:
+        await show_networking_card(update, context)
+        return ConversationHandler.END
+
+
+async def ask_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    name = update.message.text
+    @sync_to_async
+    def update_user():
+        user = User.objects.get(tg_id=user_id)
+        user.name = name
+        user.save()
+        return user
+    await update_user()
+    await update.message.reply_text(
+        "Название вашей компании. Если нет, напишите '-'",
+        reply_markup=get_question_menu()
+    )
+    return ASK_COMPANY
+
+
+async def ask_company(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    company = update.message.text
+    @sync_to_async
+    def update_user():
+        user = User.objects.get(tg_id=user_id)
+        user.company = company
+        user.save()
+        return user
+    await update_user()
+    await update.message.reply_text(
+        "Введите вашу должность. Если нет, напишите '-'",
+        reply_markup=get_question_menu()
+    )
+    return ASK_POSITION
+
+
+async def ask_position(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    position = update.message.text
+    @sync_to_async
+    def update_user():
+        user = User.objects.get(tg_id=user_id)
+        user.position = position
+        user.save()
+        return user
+    await update_user()
+    await update.message.reply_text(
+        "Расскажите немного о себе (чем занимаетесь, интересы, что ищете на митапе):",
+        reply_markup=get_question_menu()
+    )
+    return ASK_ABOUT
+
+
+async def ask_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    about = update.message.text
+    @sync_to_async
+    def update_user():
+        user = User.objects.get(tg_id=user_id)
+        user.about = about
+        user.has_questionnaire = True
+        user.save()
+        return user
+    await update_user()
+    await update.message.reply_text(
+        "Анкета заполнена"
+    )
+    await show_networking_card(update, context)
+    return ConversationHandler.END
+
+
+async def cancel_networking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Заполнение анкеты отменено.",
+        reply_markup=get_user_menu()
+    )
+    return ConversationHandler.END
+
+async def get_user_role(tg_id):
+    @sync_to_async
+    def _get_role():
+        user=User.objects.filter(tg_id=tg_id).first()
+        if not user:
+            return 'guest'
+        return user.user_role
+    return await _get_role()
+
+
+
 async def handle_speaker_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup):
     text = update.message.text
     if text == "🏠 Меню":
         await update.message.reply_text("🏠 Меню", reply_markup=reply_markup)
     elif text == "Начать доклад":
-        await update.message.reply_text("Вы начали доклад", reply_markup=get_speaker_active_menu())
+        await activate_speech(update, context)
     elif text == "Закончить доклад":
-        await update.message.reply_text("Вы закончили доклад", reply_markup=reply_markup)
+        speech = await deactivate_speech(update, context)
+        if speech:
+            await update.message.reply_text(
+                "Вы закончили доклад. Спасибо за участие",
+                reply_markup=get_speaker_menu()
+            )
+        else: 
+            await update.message.reply_text(
+                "У вас нет активного доклада"
+            )
     elif text == "Вопросы от слушателей":
-        await update.message.reply_text("Тут будет список вопросов", reply_markup=get_question_menu())
+        await get_questions(update, context)
     elif text == "Программа":
         await show_program(update, context)
     elif text == "Режим слушателя":
@@ -256,7 +490,7 @@ async def handle_speaker_buttons(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("Вы вернулись в главное меню", reply_markup=get_speaker_active_menu())
 
 
-async def hundle_user_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup):
+async def hendle_user_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup):
     text = update.message.text
     if text == "🏠 Меню":
         await update.message.reply_text("Вы в главном меню", reply_markup=reply_markup)
@@ -266,19 +500,19 @@ async def hundle_user_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("Отобразится инфа о текущем докладчике", reply_markup=reply_markup)
     elif text == "Поддержать проект":
         await update.message.reply_text("Тут вы сможете поддержать проект", reply_markup=reply_markup)
-    elif text == "Курилка":
-        await update.message.reply_text("Тут вы сможете познакомиться с коллегами))")
     elif text == "Отмена":
         await update.message.reply_text("Вы вернулись в главное меню", reply_markup=reply_markup)
 
 
 async def hundle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get('is_speaker', False):
+    tg_id = update.effective_user.id
+    role = await get_user_role(tg_id)
+    if role == 'speaker':
         reply_markup = get_speaker_menu()
         await handle_speaker_buttons(update, context, reply_markup)
     else:
         reply_markup = get_user_menu()
-        await hundle_user_buttons(update, context, reply_markup)
+        await hendle_user_buttons(update, context, reply_markup)
 
 
 def format_event_message(event):
@@ -304,7 +538,6 @@ def main():
     bot_token = os.getenv("TG_TOKEN")
     application = Application.builder().token(bot_token).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("speaker", toggle_speaker))
     question_hundler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex(r'^Задать вопрос$'), ask_question_start)
@@ -320,6 +553,31 @@ def main():
         allow_reentry=True
     )
     application.add_handler(question_hundler)
+    networking_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex(r'^Курилка$'), networking_start)
+        ],
+        states={
+            ASK_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_name)
+            ],
+            ASK_COMPANY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_company)
+            ],
+            ASK_POSITION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_position)
+            ],
+            ASK_ABOUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_about)
+            ]
+        },
+        fallbacks=[
+            MessageHandler(filters.Regex(r'^Отмена$'), cancel_networking)
+        ],
+        allow_reentry = True,
+    )
+    application.add_handler(networking_handler)
+    application.add_handler(CallbackQueryHandler(networking_next_callback, pattern = "^networking_next$"))
     application.add_handler(CallbackQueryHandler(handle_program_callback, pattern="^program_"))
     application.add_handler(MessageHandler(filters.TEXT, hundle_buttons))
     application.run_polling()
