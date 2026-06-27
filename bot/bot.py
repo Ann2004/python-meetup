@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'meetup.settings')
 django.setup()
-from meetup_core.models import User, Event, SpeakerSpeech, Question
+from meetup_core.models import User, Event, SpeakerSpeech, Question, Subscription
 from asgiref.sync import sync_to_async
 from telegram import Update 
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, ConversationHandler
@@ -501,6 +501,37 @@ async def get_active_speaker(update:Update, context: ContextTypes.DEFAULT_TYPE):
     text = await get_speaker()
     await update.message.reply_text(text, reply_markup=get_user_menu())
 
+
+async def toggle_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    @sync_to_async
+    def get_user():
+        return User.objects.get(tg_id=user_id)
+    user_db = await get_user()
+
+    @sync_to_async
+    def toggle():
+        sub, created = Subscription.objects.get_or_create(
+            user=user_db,
+            defaults={'is_active': True}
+        )
+        if not created:
+            sub.is_active = not sub.is_active
+            sub.save()
+        return sub
+    sub = await toggle()
+    if sub.is_active:
+        await update.message.reply_text(
+            "Вы подписались на уыедомления о новых мероприятиях!",
+            reply_markup=get_user_menu()
+        )
+    else:
+        await update.message.reply_text(
+            "Вы отписались от уведомлений о новых мероприятиях",
+            reply_markup=get_user_menu()
+        )
+
+
 async def handle_speaker_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup):
     text = update.message.text
     if text == "🏠 Меню":
@@ -538,8 +569,8 @@ async def hendle_user_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         await get_active_speaker(update, context)
     elif text == "Поддержать проект":
         await update.message.reply_text("Тут вы сможете поддержать проект", reply_markup=reply_markup)
-    elif text == "Отмена":
-        await update.message.reply_text("Вы вернулись в главное меню", reply_markup=reply_markup)
+    elif text == "Подписаться":
+        await toggle_subscription(update, context)
 
 
 async def hundle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):

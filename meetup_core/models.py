@@ -33,8 +33,12 @@ class User(models.Model):
         max_length=200,
         blank=True
     )
+    has_questionnaire = models.BooleanField(
+        'Заполнил анкету для знакомств',
+        default = False
+    )
     about = models.TextField('О себе', blank=True)
-
+    
     class Meta:
         verbose_name = 'Пользователь'
         verbose_name_plural = 'Пользователи'
@@ -69,6 +73,10 @@ class SpeakerSpeech(models.Model):
         on_delete=models.CASCADE,
         verbose_name='Спикер',
         limit_choices_to={'user_role': 'speaker'},
+    )
+    is_active = models.BooleanField(
+        'Состояние активности выступления',
+        default=False
     )
     started_at = models.TimeField('Время начала выступления')
     ended_at = models.TimeField('Время окончания выступления')
