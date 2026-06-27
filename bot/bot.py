@@ -476,6 +476,30 @@ async def get_user_role(tg_id):
     return await _get_role()
 
 
+async def get_active_speaker(update:Update, context: ContextTypes.DEFAULT_TYPE):
+    speech = await get_active_speech()
+    if not speech:
+        await update.message.reply_text(
+            "Нет активных спикеров. Попробуйте позже",
+            reply_markup=get_user_menu()
+        )
+        return
+    @sync_to_async
+    def get_speaker():
+        text = f"Выступает: {speech.speaker.name}\n\n"
+        if speech.speaker.company:
+            text += f"Компания:{speech.speaker.company}\n"
+        if speech.speaker.position:
+            text += f"Должность:{speech.speaker.position}\n"
+        if speech.speaker.about:
+            text += f"О себе:{speech.speaker.about}\n"
+        if speech.speaker.username:
+            text += f"username: @{speech.speaker.username}\n"
+        if speech.speaker.tg_id:
+            text += f"tg_id: {speech.speaker.tg_id}"
+        return text
+    text = await get_speaker()
+    await update.message.reply_text(text, reply_markup=get_user_menu())
 
 async def handle_speaker_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, reply_markup):
     text = update.message.text
@@ -511,7 +535,7 @@ async def hendle_user_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif text == "Программа":
         await show_program(update, context)
     elif text == "Текущий докладчик":
-        await update.message.reply_text("Отобразится инфа о текущем докладчике", reply_markup=reply_markup)
+        await get_active_speaker(update, context)
     elif text == "Поддержать проект":
         await update.message.reply_text("Тут вы сможете поддержать проект", reply_markup=reply_markup)
     elif text == "Отмена":
