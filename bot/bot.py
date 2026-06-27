@@ -160,6 +160,13 @@ async def handle_program_callback(update: Update, context: ContextTypes.DEFAULT_
     
     await show_program(update, context, edit_message=query.message)
 
+async def get_active_speech():
+    @sync_to_async
+    def _get():
+        active = SpeakerSpeech.objects.filter(is_active=True).select_related('speaker').first()
+        if active:
+            return active
+    return await _get()
 
 async def get_current_speech():
     now = datetime.now()
@@ -180,11 +187,18 @@ async def get_current_speech():
 
 
 async def ask_question_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Задайте ваш вопрос спикеру.\n\nЧтобы отменить, нажмите Отмена.",
-        reply_markup=get_question_menu()
-    )
-    return WAITING_QUESTION
+    active = await get_active_speech()
+    if not active:
+        await update.message.reply_text(
+            "Нет активных выступлений. Попробуйте позже)"
+            )
+        return ConversationHandler.END
+    else:
+        await update.message.reply_text(
+            "Задайте ваш вопрос спикеру.\n\nЧтобы отменить, нажмите Отмена.",
+            reply_markup=get_question_menu()
+        )
+        return WAITING_QUESTION
 
 
 async def receive_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -203,7 +217,7 @@ async def receive_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return user
     user_db = await get_or_create_user()
-    speech = await get_current_speech()
+    speech = await get_active_speech()
     if not speech:
         await update.message.reply_text(
             "Сейчас никто не выступает. Дождитесь, когда спикер начнет выступление",
