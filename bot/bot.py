@@ -4,18 +4,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'meetup.settings')
 django.setup()
-from meetup_core.models import User, Event, SpeakerSpeech, Question, Subscription
+from meetup_core.models import User, Event, SpeakerSpeech, Question, Subscription, Donation
 from asgiref.sync import sync_to_async
-from telegram import Update 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, ConversationHandler
+from telegram import Update, LabeledPrice
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, ConversationHandler, PreCheckoutQueryHandler
 from dotenv import load_dotenv
 from keyboards import (
     get_start_menu, get_user_menu, get_question_menu, 
     get_speaker_menu, get_speaker_active_menu, get_program_navigation,
-    get_networking_card_keyboard
+    get_networking_card_keyboard, get_donate_menu
 )
 from datetime import datetime, time
 from random import choice
+import time
 
 
 WAITING_QUESTION = 1
@@ -48,6 +49,74 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 С моей помощью вы сможете посмотреть программу мероприятия и задать вопрос ведущему, а так-же познакомиться с коллегами)))\n
 Чтобы открыть меню нажми на кнопку 🏠 Меню """
     await update.message.reply_text(welcome_text, reply_markup=get_start_menu())
+
+
+async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    text = update.message.text
+    if "10⭐" in text:
+        stars = 10
+    elif "50⭐" in text:
+        stars = 50
+    elif "100⭐" in text:
+        stars = 100
+    else:
+        return
+    title = "Поддержка митапа"
+    description = "Спасибо, что помогаете сообществу"
+    payload = f"donation_{chat_id}_{int(time.time())}"
+    prices = [LabeledPrice("Поддержка", stars)]
+    try:
+        await context.bot.send_invoice(
+            chat_id=chat_id,
+            title=title,
+            description=description,
+            payload=payload,
+            provider_token="",
+            currency="XTR",
+            prices=prices,
+            need_name=False,
+            need_phone_number=False,
+        )
+    except Exception as e:
+        await update.message.reply_text("Ошибка при создании счета")
+        print(f"Ошибка:{e}")
+
+
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    if query.invoice_payload.startswith("donation_"):
+        await query.answer(ok=True)
+    else:
+        await query.answer(ok=False, error_message="Что-то пошло не так...")
+
+
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.message.successful_payment
+    total_amount = payment.total_amount
+    user = update.effective_user
+
+    @sync_to_async
+    def save_donation():
+        user_db, _ = User.objects.get_or_create(
+            tg_id=user.id,
+            defaults={
+            'username': user.username or "",
+            'name': user.full_name or "",
+            'user_role': 'guest'
+            }
+        )
+        Donation.objects.create(
+            user=user_db,
+            event=None,
+            amount=total_amount
+        )
+    await save_donation()
+
+    await update.message.reply_text(
+        f"Спасибо за потдержку!\n"
+        f"Вы отправили {total_amount} зыезд. Это поможет нам!"
+    )
 
 
 @sync_to_async
@@ -568,7 +637,7 @@ async def hendle_user_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif text == "Текущий докладчик":
         await get_active_speaker(update, context)
     elif text == "Поддержать проект":
-        await update.message.reply_text("Тут вы сможете поддержать проект", reply_markup=reply_markup)
+        await update.message.reply_text("Вы можете поддержать проект", reply_markup=get_donate_menu())
     elif text == "Подписаться":
         await toggle_subscription(update, context)
 
@@ -645,6 +714,9 @@ def main():
         ],
         allow_reentry = True,
     )
+    application.add_handler(MessageHandler(filters.Regex(r'^Поддержать \d+⭐$'), donate))
+    application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
     application.add_handler(networking_handler)
     application.add_handler(CallbackQueryHandler(networking_next_callback, pattern = "^networking_next$"))
     application.add_handler(CallbackQueryHandler(handle_program_callback, pattern="^program_"))

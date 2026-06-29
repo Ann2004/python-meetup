@@ -57,3 +57,10 @@ def get_networking_card_keyboard():
         [InlineKeyboardButton("Показать другого пользователя", callback_data='networking_next')]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def get_donate_menu():
+    keyboard = [
+        [KeyboardButton("Поддержать 10⭐"), KeyboardButton("Поддержать 50⭐")],
+        [KeyboardButton("Поддержать 100⭐"), KeyboardButton("🏠 Меню")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
