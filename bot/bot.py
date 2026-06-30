@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'meetup.settings')
 django.setup()
-from meetup_core.models import User, Event, SpeakerSpeech, Question, Subscription, Donation
+from meetup_core.models import User, Event, SpeakerSpeech, Question, Subscription, Donation, SpeakerApplication
 from asgiref.sync import sync_to_async
 from telegram import Update, LabeledPrice
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler, ConversationHandler, PreCheckoutQueryHandler
@@ -24,6 +24,9 @@ ASK_NAME = 2
 ASK_COMPANY = 3
 ASK_POSITION = 4
 ASK_ABOUT = 5
+ASK_TOPIC = 6
+ASK_DESCRIPTION = 7
+ASK_EVENT = 8
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -49,6 +52,55 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 С моей помощью вы сможете посмотреть программу мероприятия и задать вопрос ведущему, а так-же познакомиться с коллегами)))\n
 Чтобы открыть меню нажми на кнопку 🏠 Меню """
     await update.message.reply_text(welcome_text, reply_markup=get_start_menu())
+
+
+async def apply_speaker_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Вы хотите записаться спикером на следующее мероприятие.\n"
+        "Введите тему вашего доклада:",
+        reply_markup=get_question_menu()
+    )
+    return ASK_TOPIC
+
+
+async def apply_speaker_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['topic'] = update.message.text
+    await update.message.reply_text(
+        "Теперь напишите краткое описание доклада (что будете рассказывать, для кого и т.п.):",
+        reply_markup=get_question_menu()
+    )
+    return ASK_DESCRIPTION
+
+
+async def apply_speaker_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    topic = context.user_data.get('topic')
+    description = update.message.text
+    @sync_to_async
+    def create_application():
+        user = User.objects.get(tg_id=user_id)
+        next_event = Event.objects.filter(event_date__gte=datetime.now().date()).order_by('event_date').first()
+        app = SpeakerApplication.objects.create(
+            user=user,
+            event=next_event,
+            topic=topic,
+            description=description
+            )
+        return app
+    await create_application()
+    await update.message.reply_text(
+        "✅ Ваша заявка отправлена организатору.\n"
+        "Мы свяжемся с вами после рассмотрения!",
+        reply_markup=get_user_menu()
+    )
+    return ConversationHandler.END
+
+async def cancel_application(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Отменено. Возвращаемя в меню.",
+        reply_markup=get_user_menu()
+    )
+    return ConversationHandler.END
 
 
 async def donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -522,7 +574,8 @@ async def ask_about(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return user
     await update_user()
     await update.message.reply_text(
-        "Анкета заполнена"
+        "Анкета заполнена",
+        reply_markup=get_user_menu()
     )
     await show_networking_card(update, context)
     return ConversationHandler.END
@@ -714,9 +767,23 @@ def main():
         ],
         allow_reentry = True,
     )
+    application_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex(r'^Записаться спикером$'), apply_speaker_start)
+        ],
+        states={
+            ASK_TOPIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, apply_speaker_topic)],
+            ASK_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, apply_speaker_description)], 
+        },
+        fallbacks=[
+            MessageHandler(filters.Regex(r'^Отмена$'), cancel_application)
+        ],
+        allow_reentry=True
+    )
     application.add_handler(MessageHandler(filters.Regex(r'^Поддержать \d+⭐$'), donate))
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
+    application.add_handler(application_handler)
     application.add_handler(networking_handler)
     application.add_handler(CallbackQueryHandler(networking_next_callback, pattern = "^networking_next$"))
     application.add_handler(CallbackQueryHandler(handle_program_callback, pattern="^program_"))

@@ -12,7 +12,8 @@ def get_user_menu():
     keyboard = [
         [KeyboardButton("Программа"), KeyboardButton("Задать вопрос")],
         [KeyboardButton("Текущий докладчик"), KeyboardButton("Поддержать проект")],
-        [KeyboardButton("Курилка"), KeyboardButton("Подписаться")]
+        [KeyboardButton("Курилка"), KeyboardButton("Подписаться")],
+        [KeyboardButton("Записаться спикером")],
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
